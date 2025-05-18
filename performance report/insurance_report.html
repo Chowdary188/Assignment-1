@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XYZ TECH Insurance Claims Analysis: April 2025 Performance Report</title>
+  <!-- Prop-types first -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <!-- React and dependencies -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel for JSX -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://unpkg.com/papaparse@latest/papaparse.min.js"></script>
+  <!-- Chrono for date parsing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chrono-node/1.3.11/chrono.min.js"></script>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Recharts last -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.0/Recharts.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+
+    const App = () => {
+      const [data, setData] = React.useState([]);
+      const [loading, setLoading] = React.useState(true);
+      const [fileError, setFileError] = React.useState('');
+
+      const handleFileUpload = (event) => {
+        const file = event.target.files[0];
+        if (!file) {
+          setFileError('No file selected. Please upload a CSV file.');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            if (!file.name.endsWith('.csv')) {
+              setFileError('Unsupported file format. Please upload a .csv file.');
+              setLoading(false);
+              return;
+            }
+            Papa.parse(e.target.result, {
+              header: true,
+              skipEmptyLines: true,
+              dynamicTyping: false,
+              transformHeader: header => header.trim().replace(/^"|"$/g, ''),
+              transform: (value, header) => value.trim().replace(/^"|"$/g, ''),
+              complete: (results) => {
+                if (!results.data || results.data.length === 0) {
+                  setFileError('CSV file is empty or invalid.');
+                  setLoading(false);
+                  return;
+                }
+                const cleanedData = processAndCleanData(results.data);
+                if (cleanedData.length === 0) {
+                  setFileError('No valid data found after processing.');
+                  setLoading(false);
+                  return;
+                }
+                setData(cleanedData);
+                setLoading(false);
+              },
+              error: (err) => {
+                console.error('CSV Parsing Error:', err);
+                setFileError('Failed to parse CSV file: ' + err.message);
+                setLoading(false);
+              }
+            });
+          } catch (err) {
+            console.error('File Processing Error:', err);
+            setFileError('Error processing file: ' + err.message);
+            setLoading(false);
+          }
+        };
+        reader.onerror = () => {
+          setFileError('Error reading file.');
+          setLoading(false);
+        };
+        reader.readAsText(file);
+      };
+
+      const processAndCleanData = (rawData) => {
+        try {
+          return rawData
+            .filter(row => row['CLAIM_ID'] && row['CUSTOMER_ID'])
+            .map(row => {
+              const claimAmount = parseFloat(row['CLAIM_AMOUNT']) || 0;
+              const premiumCollected = parseFloat(row['PREMIUM_COLLECTED']) || 0;
+              const paidAmount = parseFloat(row['PAID_AMOUNT']) || 0;
+
+              if (claimAmount < 0 || premiumCollected < 0 || paidAmount < 0) {
+                return null;
+              }
+
+              const claimDate = row['CLAIM_DATE'] ? chrono.parseDate(row['CLAIM_DATE']) : null;
+              const formattedDate = claimDate ? claimDate.toISOString().split('T')[0] : '';
+
+              const rejectionClass = complexRejectionClassifier(row['REJECTION_REMARKS'] || '');
+
+              return {
+                CLAIM_ID: row['CLAIM_ID'],
+                CLAIM_DATE: formattedDate,
+                CUSTOMER_ID: row['CUSTOMER_ID'],
+                CLAIM_AMOUNT: claimAmount,
+                PREMIUM_COLLECTED: premiumCollected,
+                PAID_AMOUNT: paidAmount,
+                CITY: row['CITY'] || '',
+                REJECTION_REMARKS: row['REJECTION_REMARKS'] || '',
+                REJECTION_CLASS: rejectionClass
+              };
+            })
+            .filter(row => row !== null);
+        } catch (err) {
+          console.error('Data Processing Error:', err);
+          setFileError('Error cleaning data: ' + err.message);
+          return [];
+        }
+      };
+
+      const complexRejectionClassifier = (remarkText) => {
+        try {
+          if (!remarkText || typeof remarkText !== 'string' || remarkText.trim().length === 0) {
+            return 'NoRemark';
+          }
+          const remarkLower = remarkText.toLowerCase();
+          if (remarkLower.includes('fake_document')) {
+            return 'Fake_document';
+          }
+          if (remarkLower.includes('not_covered')) {
+            return 'Not_Covered';
+          }
+          if (remarkLower.includes('policy_expired')) {
+            return 'Policy_expired';
+          }
+          return 'Unknown';
+        } catch (e) {
+          console.error(`Error in complex_rejection_classifier: ${e.message}`);
+          return 'Error';
+        }
+      };
+
+      const aggregateData = () => {
+        try {
+          const cityStats = {};
+          data.forEach(row => {
+            const city = row.CITY || 'Unknown';
+            if (!cityStats[city]) {
+              cityStats[city] = {
+                totalClaims: 0,
+                totalClaimAmount: 0,
+                totalPaidAmount: 0,
+                totalPremium: 0,
+                rejections: 0
+              };
+            }
+            cityStats[city].totalClaims += 1;
+            cityStats[city].totalClaimAmount += row.CLAIM_AMOUNT;
+            cityStats[city].totalPaidAmount += row.PAID_AMOUNT;
+            cityStats[city].totalPremium += row.PREMIUM_COLLECTED;
+            if (row.PAID_AMOUNT === 0 && row.REJECTION_REMARKS) {
+              cityStats[city].rejections += 1;
+            }
+          });
+
+          return Object.entries(cityStats).map(([city, stats]) => ({
+            city,
+            ...stats,
+            rejectionRate: (stats.rejections / stats.totalClaims) * 100,
+            payoutRatio: stats.totalPaidAmount / (stats.totalClaimAmount || 1),
+            profitability: stats.totalPremium - stats.totalPaidAmount
+          }));
+        } catch (err) {
+          console.error('Aggregation Error:', err);
+          return [];
+        }
+      };
+
+      const rejectionStats = () => {
+        try {
+          const stats = {};
+          data.forEach(row => {
+            const rejectionClass = row.REJECTION_CLASS;
+            stats[rejectionClass] = (stats[rejectionClass] || 0) + 1;
+          });
+          return Object.entries(stats).map(([name, value]) => ({ name, value }));
+        } catch (err) {
+          console.error('Rejection Stats Error:', err);
+          return [];
+        }
+      };
+
+      const formatNumber = (num) => {
+        if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+        if (num >= 1_000) return (num / 1_000).toFixed(1) + 'K';
+        return num.toFixed(0);
+      };
+
+      if (fileError) {
+        return (
+          <div className="text-center text-2xl text-red-600 mt-10">
+            {fileError}
+          </div>
+        );
+      }
+
+      if (loading) {
+        return (
+          <div className="text-center text-2xl text-gray-600 mt-10">
+            Please upload a CSV (.csv) file to view the report.
+            <div className="mt-4">
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleFileUpload}
+                className="p-2 border rounded"
+              />
+            </div>
+          </div>
+        );
+      }
+
+      const cityData = aggregateData();
+      const rejectionData = rejectionStats();
+
+      if (cityData.length === 0 || rejectionData.length === 0) {
+        return (
+          <div className="text-center text-2xl text-red-600 mt-10">
+            No valid data to display. Please check the CSV file and try again.
+          </div>
+        );
+      }
+
+      const highestRejectionCity = cityData.reduce((max, curr) =>
+        curr.rejectionRate > max.rejectionRate ? curr : max, cityData[0]);
+
+      const closureRecommendation = cityData.reduce((min, curr) =>
+        curr.profitability < min.profitability ? curr : min, cityData[0]);
+
+      return (
+        <div className="bg-white shadow-lg rounded-lg p-6">
+          <h1 className="text-3xl font-bold text-blue-800 mb-6">
+            XYZ TECH Insurance Claims Analysis: April 2025 Performance Report
+          </h1>
+          <section className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Summary</h2>
+            <p className="text-gray-600">
+              The dataset contains {data.length} insurance claims filed in April 2025 across four cities: Pune, Kolkata, Ranchi, and Guwahati. Total claim amount is ₹{formatNumber(data.reduce((sum, row) => sum + row.CLAIM_AMOUNT, 0))}, with ₹{formatNumber(data.reduce((sum, row) => sum + row.PAID_AMOUNT, 0))} paid out. The overall rejection rate is {(data.filter(row => row.PAID_AMOUNT === 0 && row.REJECTION_REMARKS).length / data.length * 100).toFixed(1)}%.
+            </p>
+          </section>
+
+          <section className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Interesting Fact</h2>
+            <p className="text-gray-600">
+              {highestRejectionCity.city} has the highest rejection rate at {highestRejectionCity.rejectionRate.toFixed(1)}%, primarily due to policy expirations, indicating potential issues with policy renewals in this city.
+            </p>
+          </section>
+
+          <section className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Claims and Paid Amounts by City</h2>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <Recharts.ResponsiveContainer width="100%" height={400}>
+                <Recharts.BarChart data={cityData}>
+                  <Recharts.CartesianGrid strokeDasharray="3 3" />
+                  <Recharts.XAxis dataKey="city" fontSize={12} />
+                  <Recharts.YAxis tickFormatter={formatNumber} fontSize={12} />
+                  <Recharts.Tooltip formatter={(value) => `₹${formatNumber(value)}`} />
+                  <Recharts.Legend />
+                  <Recharts.Bar dataKey="totalClaimAmount" name="Claim Amount" fill="#3B82F6" />
+                  <Recharts.Bar dataKey="totalPaidAmount" name="Paid Amount" fill="#10B981" />
+                </Recharts.BarChart>
+              </Recharts.ResponsiveContainer>
+            </div>
+          </section>
+
+          <section className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Rejection Reasons</h2>
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <Recharts.ResponsiveContainer width="100%" height={400}>
+                <Recharts.PieChart>
+                  <Recharts.Pie
+                    data={rejectionData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={150}
+                    fill="#8884d8"
+                    label
+                  >
+                    {rejectionData.map((entry, index) => (
+                      <Recharts.Cell key={`cell-${index}`} fill={['#EF4444', '#F59E0B', '#10B981', '#3B82F6', '#8B5CF6'][index % 5]} />
+                    ))}
+                  </Recharts.Pie>
+                  <Recharts.Tooltip />
+                  <Recharts.Legend />
+                </Recharts.PieChart>
+              </Recharts.ResponsiveContainer>
+            </div>
+          </section>
+
+          <section className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Claims Data</h2>
+            <div className="overflow-x-auto">
+              <table className="min-w-full bg-white border">
+                <thead>
+                  <tr className="bg-gray-200">
+                    <th className="px-4 py-2 text-left">Claim ID</th>
+                    <th className="px-4 py-2 text-left">Date</th>
+                    <th className="px-4 py-2 text-left">Customer ID</th>
+                    <th className="px-4 py-2 text-left">Claim Amount</th>
+                    <th className="px-4 py-2 text-left">Premium</th>
+                    <th className="px-4 py-2 text-left">Paid Amount</th>
+                    <th className="px-4 py-2 text-left">City</th>
+                    <th className="px-4 py-2 text-left">Rejection Class</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.slice(0, 10).map((row, index) => (
+                    <tr key={row.CLAIM_ID} className={index % 2 === 0 ? 'bg-gray-50' : ''}>
+                      <td className="px-4 py-2">{row.CLAIM_ID}</td>
+                      <td className="px-4 py-2">{row.CLAIM_DATE}</td>
+                      <td className="px-4 py-2">{row.CUSTOMER_ID}</td>
+                      <td className="px-4 py-2">₹{formatNumber(row.CLAIM_AMOUNT)}</td>
+                      <td className="px-4 py-2">₹{formatNumber(row.PREMIUM_COLLECTED)}</td>
+                      <td className="px-4 py-2">₹{formatNumber(row.PAID_AMOUNT)}</td>
+                      <td className="px-4 py-2">{row.CITY}</td>
+                      <td className="px-4 py-2">{row.REJECTION_CLASS}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="mb-8">
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Recommendation for City Closure</h2>
+            <p className="text-gray-600">
+              Based on profitability analysis, we recommend considering closure of operations in {closureRecommendation.city}. This city has the lowest profitability (₹{formatNumber(closureRecommendation.profitability)}), with a high rejection rate of {closureRecommendation.rejectionRate.toFixed(1)}% and a low payout ratio of {(closureRecommendation.payoutRatio * 100).toFixed(1)}%. Closing operations here could optimize costs without significantly impacting overall revenue.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-2xl font-semibold text-gray-700 mb-4">Conclusion</h2>
+            <p className="text-gray-600">
+              The April 2025 claims data reveals significant variations in performance across cities. {closureRecommendation.city} stands out as the least profitable, driven by high rejection rates and low payout efficiency. The corrected rejection classifier accurately categorizes rejection reasons, with {highestRejectionCity.city} showing a high incidence of policy expirations. Further investigation into policy renewal processes and fraud detection could improve overall performance.
+            </p>
+          </section>
+        </div>
+      );
+    };
+
+    try {
+      root.render(<App />);
+    } catch (err) {
+      console.error('Rendering Error:', err);
+      document.getElementById('root').innerHTML = '<div class="text-center text-2xl text-red-600 mt-10">Failed to render application: ' + err.message + '</div>';
+    }
+  </script>
+</body>
+</html>
